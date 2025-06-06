@@ -1,7 +1,10 @@
 # Wordpress From Ram
-This is a living, breathing absurdist rendering of web application hosting. It is performance tuning as an art form. I have created a new medium and a completely different way to think about hosting web applications. 
 
-Basically, what we are doing is taking WordPress and loading it into RAM with an absurdly optimized setup. That setup is as follows: 
+You can read my blog post about this, where I talk about the origins of this absurd project: [How To Run Wordpress from RAM](https://rickconlee.com/how-to-run-wordpress-completely-from-ram/) 
+
+This is a living, breathing absurdist rendering of web application hosting. Performance tuning is an art form. I have created a new medium and a completely different way to think about hosting web applications. 
+
+Basically, we are taking WordPress and loading STRAIGHT it into RAM with an absurdly optimized setup. That setup is as follows: 
 
 - The entire site and services required to run Wordpress run from RAM. 
 - The NGINX server is custom compiled.
