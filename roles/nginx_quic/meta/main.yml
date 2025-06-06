@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: "Neighbor DevOps"
+  description: "Compile and install Nginx 1.27.x with QUIC/HTTP3 support"
+  license: "MIT"
+  min_ansible_version: 2.10
+  platforms:
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+
+dependencies: []

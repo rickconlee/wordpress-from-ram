@@ -1,0 +1,6 @@
+letsencrypt_email: "admin@{{ nginx_quic_server_name }}"
+letsencrypt_domains:
+  - "{{ nginx_quic_server_name }}"
+letsencrypt_webroot: "{{ wordpress_site_root }}"
+letsencrypt_cert_path: "/etc/letsencrypt/live/{{ nginx_quic_server_name }}/fullchain.pem"
+letsencrypt_key_path: "/etc/letsencrypt/live/{{ nginx_quic_server_name }}/privkey.pem"

@@ -1,0 +1,42 @@
+############################
+# Database Configuration
+############################
+
+- name: Stop MariaDB before modifying config
+  systemd:
+    name: mariadb
+    state: stopped
+
+- name: Update MariaDB datadir in config
+  lineinfile:
+    path: /etc/mysql/mariadb.conf.d/50-server.cnf
+    regexp: '^datadir'
+    line: datadir = /mnt/mysql
+    insertafter: '^[\[]mysqld[\]]'
+    create: yes
+    backup: yes
+
+- name: Initialize new RAM-based datadir (mysql_install_db)
+  command: >
+    mariadb-install-db --user=mysql --basedir=/usr --datadir=/mnt/mysql
+  args:
+    creates: /mnt/mysql/mysql
+
+- name: Fix ownership of /mnt/mysql
+  file:
+    path: /mnt/mysql
+    owner: mysql
+    group: mysql
+    recurse: yes
+
+- name: Start MariaDB with RAM-based datadir
+  systemd:
+    name: mariadb
+    state: started
+    enabled: yes
+
+- name: Wait for MariaDB to be available
+  wait_for:
+    port: 3306
+    delay: 2
+    timeout: 10

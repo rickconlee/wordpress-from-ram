@@ -1,0 +1,88 @@
+# Nginx HTTP/3 config — built for QUIC on {{ nginx_quic_server_name }}
+
+user  www-data;
+worker_processes  1;
+pcre_jit on;
+
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    # Lua module search paths (plain Lua & C modules)
+    lua_package_path  "/usr/local/share/lua/5.1/?.lua;/usr/local/share/lua/5.1/?/init.lua;;";
+    lua_package_cpath "/usr/local/lib/lua/5.1/?.so;;";
+
+    # ← NEW: load resty.core once for the whole master
+    #lua_load_resty_core on;
+    
+    log_format  main  '$remote_addr - $remote_user [$time_local] '
+                      '"$request" $status $body_bytes_sent '
+                      '"$http_referer" "$http_user_agent"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile        on;
+    tcp_nopush      on;
+    tcp_nodelay     on;
+    keepalive_timeout  65;
+    types_hash_max_size 2048;
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    server {
+        listen 80;
+        server_name {{ nginx_quic_server_name }};
+
+        location /.well-known/acme-challenge/ {
+            root {{ letsencrypt_webroot }};
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        listen 443 quic reuseport;
+        http2 on;
+        http3 on;
+        client_max_body_size 64M;
+
+        server_name {{ nginx_quic_server_name }};
+
+        ssl_certificate     {{ nginx_quic_ssl_cert_path }};
+        ssl_certificate_key {{ nginx_quic_ssl_key_path }};
+        ssl_protocols       TLSv1.3;
+
+        add_header Alt-Svc 'h3=":443"'; # Advertise HTTP/3 support
+        add_header QUIC-Status $http3;  # Optional debug header
+
+        root {{ wordpress_site_root }};
+        index index.php index.html index.htm;
+
+        # Serve static files directly (critical for /wp-admin styles)
+        location ~* \.(?:ico|css|js|gif|jpe?g|png|woff2?|ttf|svg|eot|otf)$ {
+            try_files $uri =404;
+            expires 6M;
+            access_log off;
+            add_header Cache-Control "public";
+        }
+
+        location / {
+            try_files $uri $uri/ /index.php?$args;
+        }
+
+        location ~ \.php$ {
+            include        fastcgi_params;
+            fastcgi_pass   unix:/run/php/php8.2-fpm.sock;
+            fastcgi_index  index.php;
+            fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_param  PATH_INFO       $fastcgi_path_info;
+        }
+
+        location ~ /\.ht {
+            deny all;
+        }
+    }
+}

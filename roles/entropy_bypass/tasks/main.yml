@@ -1,0 +1,31 @@
+- name: Ensure rng tools is installed
+  apt:
+    name: rng-tools
+    state: present
+  tags: entropy_bypass
+
+- name: Create fake entropy systemd unit
+  copy:
+    dest: /etc/systemd/system/fake-entropy.service
+    content: |
+      [Unit]
+      Description=Feed /dev/random with urandom for TLS
+      After=network.target
+
+      [Service]
+      ExecStart=/bin/sh -c 'while true; do dd if=/dev/urandom of=/dev/random bs=32 count=1; sleep 1; done'
+      Restart=always
+      Nice=-20
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: '0644'
+  tags: entropy_bypass
+
+- name: Enable and start fake entropy service
+  systemd:
+    name: fake-entropy.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: entropy_bypass

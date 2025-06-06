@@ -1,0 +1,35 @@
+---
+- hosts: wordpress
+  become: true
+
+  vars:
+    wordpress_site_root: "/mnt/wordpress"
+    nginx_quic_version: "1.27.4"
+    nginx_quic_build_openssl: true
+    nginx_quic_build_dir: "/usr/local/src/nginx-quic-build"
+    nginx_quic_openssl_repo: "https://github.com/quictls/openssl.git"
+    nginx_quic_openssl_dir: "{{ nginx_quic_build_dir }}/openssl-quic"
+    nginx_quic_prefix: "/etc/nginx"
+    nginx_quic_sbin_path: "/usr/sbin/nginx"
+    nginx_quic_modules_path: "/usr/lib/nginx/modules"
+    nginx_quic_manage_config: true
+    nginx_quic_config_template: "nginx.conf.j2"
+    nginx_quic_server_name: "<YOUR_SERVERNAME_HERE>"
+    nginx_quic_generate_self_signed: true
+    nginx_quic_ssl_key_path: "/etc/ssl/private/{{ nginx_quic_server_name }}.key"
+    nginx_quic_ssl_cert_path: "/etc/ssl/certs/{{ nginx_quic_server_name }}.crt"
+    nginx_quic_ssl_subject:
+      common_name: "{{ nginx_quic_server_name }}"
+      organization_name: "<YOUR_ORG_HERE>"
+      organizational_unit_name: ""
+      locality_name: "New York"
+      state_or_province_name: "NY"
+      country_name: "US"
+  
+  roles:
+    - role: base_server
+    - role: mariadb
+    - role: nginx_quic
+    - role: wordpress
+    - role: letsencrypt_certbot
+    - role: entropy_bypass

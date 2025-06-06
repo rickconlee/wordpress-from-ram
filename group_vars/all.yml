@@ -1,0 +1,2 @@
+mysql_root_password: changeme-super-secure
+mysql_ansible_password: changeme-ansible-automation

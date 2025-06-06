@@ -1,0 +1,419 @@
+# ---------- 100 % Lua-only section (cut & paste) ----------
+
+- name: Install Lua build dependencies
+  become: true
+  ansible.builtin.apt:
+    name:
+      - git
+      - luarocks
+      - libatomic1
+    state: present
+    update_cache: yes
+  tags: nginx_quic
+
+- name: Clone OpenResty LuaJIT 2.1
+  become: true
+  ansible.builtin.git:
+    repo: https://github.com/openresty/luajit2.git
+    dest: /usr/local/src/luajit-openresty
+    version: v2.1-20240626      # ← use this exact tag
+  tags: nginx_quic
+
+- name: Compile and install LuaJIT
+  become: true
+  ansible.builtin.shell: |
+    make -j"$(nproc)"
+    make install
+  args:
+    chdir: /usr/local/src/luajit-openresty
+    creates: /usr/local/lib/libluajit-5.1.so.2
+  tags: nginx_quic
+
+# 2. Keep the linker happy *everywhere*
+- name: Symlink LuaJIT shared objects into all search paths
+  become: true
+  ansible.builtin.file:
+    src: /usr/local/lib/libluajit-5.1.so.2
+    dest: "{{ item }}"
+    state: link
+    force: true
+  loop:
+    - /usr/local/lib/libluajit-5.1.so   # compile-time
+    - /usr/lib/libluajit-5.1.so         # some distros still look here
+  tags: nginx_quic
+
+- name: Refresh dynamic-loader cache
+  become: true
+  ansible.builtin.command: ldconfig
+  tags: nginx_quic
+
+- name: Remove stale lua-resty-core tree
+  become: true
+  ansible.builtin.file:
+    path: /usr/local/src/lua-resty-core
+    state: absent
+  tags: nginx_quic
+
+- name: Clone lua-resty-core v0.1.31 (exact tag)
+  become: true
+  ansible.builtin.git:
+    repo: https://github.com/openresty/lua-resty-core.git
+    dest: /usr/local/src/lua-resty-core
+    version: v0.1.31   # ✅ this tag exists
+    update: yes        # fetch if repo already there
+    force: true        # overwrite any local changes
+  tags: nginx_quic
+
+- name: make install lua-resty-core into /usr/local/share/lua/5.1
+  become: true
+  ansible.builtin.make:
+    chdir: /usr/local/src/lua-resty-core
+    target: install
+    params:
+      PREFIX: /usr/local
+      LUA_LIB_DIR: /usr/local/share/lua/5.1
+      LUA_VERSION: 5.1
+  tags: nginx_quic
+
+# 3.2  lua-resty-lrucache
+- name: Clone lua-resty-lrucache
+  become: true
+  ansible.builtin.git:
+    repo: https://github.com/openresty/lua-resty-lrucache.git
+    dest: /usr/local/src/lua-resty-lrucache
+    version: v0.13
+    update: no
+  tags: nginx_quic
+
+- name: make install lua-resty-lrucache into /usr/local/share/lua/5.1
+  become: true
+  ansible.builtin.make:
+    chdir: /usr/local/src/lua-resty-lrucache
+    target: install
+    params:
+      PREFIX: /usr/local
+      LUA_LIB_DIR: /usr/local/share/lua/5.1
+      LUA_VERSION: 5.1
+  tags: nginx_quic
+
+- name: Remove stale lua-nginx-module
+  become: true
+  ansible.builtin.file:
+    path: "{{ nginx_quic_build_dir }}/lua-nginx-module"
+    state: absent
+  tags: nginx_quic
+
+- name: Remove stale ngx_devel_kit
+  become: true
+  ansible.builtin.file:
+    path: "{{ nginx_quic_build_dir }}/ngx_devel_kit"
+    state: absent
+  tags: nginx_quic
+
+# 4. Compatible versions of NDK + lua-nginx-module
+- name: Clone ngx_devel_kit
+  become: true
+  ansible.builtin.git:
+    repo: https://github.com/vision5/ngx_devel_kit.git
+    dest: "{{ nginx_quic_build_dir }}/ngx_devel_kit"
+    version: v0.3.4        # ✅ tag exists
+    update: yes
+    force: true
+  tags: nginx_quic
+
+- name: Clone lua-nginx-module v0.10.28
+  become: true
+  ansible.builtin.git:
+    repo: https://github.com/openresty/lua-nginx-module.git
+    dest: "{{ nginx_quic_build_dir }}/lua-nginx-module"
+    version: v0.10.28      # ✅ tag exists
+    update: yes
+    force: true
+  tags: nginx_quic
+
+- name: Create build directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ nginx_quic_build_dir }}"
+    state: directory
+    mode: "0755"
+  tags: nginx_quic
+
+- name: Download Nginx mainline source tarball
+  become: true
+  ansible.builtin.get_url:
+    url: "https://nginx.org/download/nginx-{{ nginx_quic_version }}.tar.gz"
+    dest: "{{ nginx_quic_build_dir }}/nginx-{{ nginx_quic_version }}.tar.gz"
+    mode: "0644"
+  tags: nginx_quic
+
+- name: Extract Nginx source
+  become: true
+  ansible.builtin.unarchive:
+    src: "{{ nginx_quic_build_dir }}/nginx-{{ nginx_quic_version }}.tar.gz"
+    dest: "{{ nginx_quic_build_dir }}"
+    remote_src: true
+  tags: nginx_quic
+
+- name: Remove existing OpenSSL directory if it exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ nginx_quic_openssl_dir }}"
+    state: absent
+  when: nginx_quic_build_openssl
+  tags: nginx_quic
+
+- name: Clone QUIC-enabled OpenSSL (quictls) if needed
+  become: true
+  ansible.builtin.git:
+    repo: "{{ nginx_quic_openssl_repo }}"
+    dest: "{{ nginx_quic_openssl_dir }}"
+    version: master
+    force: true
+  when: nginx_quic_build_openssl
+  tags: nginx_quic
+
+- name: Clone ngx_brotli module
+  become: true
+  ansible.builtin.git:
+    repo: https://github.com/google/ngx_brotli.git
+    dest: "{{ nginx_quic_build_dir }}/ngx_brotli"
+    recursive: yes
+    update: yes
+  tags: nginx_quic
+
+- name: Force rebuild remove stale Makefile
+  become: true
+  ansible.builtin.file:
+    path: "{{ nginx_quic_build_dir }}/nginx-{{ nginx_quic_version }}/objs/Makefile"
+    state: absent
+  tags: nginx_quic
+
+
+- name: Configure Nginx with HTTP/3 + Brotli + LuaJIT (OpenResty compatible)
+  become: true
+  ansible.builtin.shell: |
+    export LUAJIT_LIB=/usr/local/lib
+    export LUAJIT_INC=/usr/local/include/luajit-2.1
+    export LD_LIBRARY_PATH=/usr/local/lib
+    ./configure \
+      --prefix={{ nginx_quic_prefix }} \
+      --conf-path=/etc/nginx/nginx.conf \
+      --sbin-path={{ nginx_quic_sbin_path }} \
+      --modules-path={{ nginx_quic_modules_path }} \
+      --with-http_v2_module \
+      --with-http_ssl_module \
+      --with-http_v3_module \
+      --with-http_sub_module \
+      --with-cc-opt="-I/usr/local/include/luajit-2.1" \
+      --with-ld-opt="-L/usr/local/lib -lluajit-5.1" \
+      {% if nginx_quic_build_openssl %}--with-openssl={{ nginx_quic_openssl_dir }}{% endif %} \
+      --add-module={{ nginx_quic_build_dir }}/ngx_brotli \
+      --add-module={{ nginx_quic_build_dir }}/ngx_devel_kit \
+      --add-module={{ nginx_quic_build_dir }}/lua-nginx-module
+  args:
+    chdir: "{{ nginx_quic_build_dir }}/nginx-{{ nginx_quic_version }}"
+    creates: "{{ nginx_quic_build_dir }}/nginx-{{ nginx_quic_version }}/objs/Makefile"
+  tags: nginx_quic
+
+- name: Compile Nginx
+  become: true
+  ansible.builtin.make:
+    chdir: "{{ nginx_quic_build_dir }}/nginx-{{ nginx_quic_version }}"
+    jobs: 2
+  tags: nginx_quic
+
+- name: Install Nginx
+  become: true
+  ansible.builtin.make:
+    chdir: "{{ nginx_quic_build_dir }}/nginx-{{ nginx_quic_version }}"
+    target: install
+  tags: nginx_quic
+
+- name: Copy inline_assets.lua to /etc/nginx
+  become: true
+  ansible.builtin.copy:
+    src: inline_assets.lua
+    dest: /etc/nginx/inline_assets.lua
+    mode: '0644'
+  tags: nginx_quic
+
+- name: Create /etc/nginx/mime.types from standard content
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/nginx/mime.types
+    mode: '0644'
+    content: |
+      types {
+          text/html                             html htm shtml;
+          text/css                              css;
+          text/xml                              xml;
+          image/gif                             gif;
+          image/jpeg                            jpeg jpg;
+          application/javascript                js;
+          application/atom+xml                  atom;
+          application/rss+xml                   rss;
+          text/mathml                           mml;
+          text/plain                            txt;
+          text/vnd.sun.j2me.app-descriptor      jad;
+          text/vnd.wap.wml                      wml;
+          text/x-component                      htc;
+          image/png                             png;
+          image/tiff                            tif tiff;
+          image/vnd.wap.wbmp                    wbmp;
+          image/x-icon                          ico;
+          image/x-jng                           jng;
+          image/x-ms-bmp                        bmp;
+          image/svg+xml                         svg svgz;
+          image/webp                            webp;
+          application/font-woff                 woff;
+          application/java-archive              jar war ear;
+          application/json                      json;
+          application/mac-binhex40              hqx;
+          application/msword                    doc;
+          application/pdf                       pdf;
+          application/postscript                ps eps ai;
+          application/rtf                       rtf;
+          application/vnd.apple.mpegurl         m3u8;
+          application/vnd.ms-excel              xls;
+          application/vnd.ms-fontobject         eot;
+          application/vnd.ms-powerpoint         ppt;
+          application/vnd.wap.wmlc              wmlc;
+          application/vnd.google-earth.kml+xml  kml;
+          application/vnd.google-earth.kmz      kmz;
+          application/x-7z-compressed           7z;
+          application/x-cocoa                   cco;
+          application/x-java-archive-diff       jardiff;
+          application/x-java-jnlp-file          jnlp;
+          application/x-makeself                run;
+          application/x-perl                    pl pm;
+          application/x-pilot                   prc pdb;
+          application/x-rar-compressed          rar;
+          application/x-redhat-package-manager  rpm;
+          application/x-sea                     sea;
+          application/x-shockwave-flash         swf;
+          application/x-stuffit                 sit;
+          application/x-tcl                     tcl tk;
+          application/x-x509-ca-cert            der pem crt;
+          application/x-xpinstall               xpi;
+          application/xhtml+xml                 xhtml;
+          application/xspf+xml                  xspf;
+          application/zip                       zip;
+          application/octet-stream              bin exe dll;
+          application/octet-stream              deb;
+          application/octet-stream              dmg;
+          application/octet-stream              iso img;
+          application/octet-stream              msi msp msm;
+          audio/midi                            mid midi kar;
+          audio/mpeg                            mp3;
+          audio/ogg                             ogg;
+          audio/x-m4a                           m4a;
+          audio/x-realaudio                     ra;
+          video/3gpp                            3gpp 3gp;
+          video/mp2t                            ts;
+      }
+  tags: nginx_quic
+
+- name: Create /etc/nginx/fastcgi_params file
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/nginx/fastcgi_params
+    mode: '0644'
+    content: |
+      fastcgi_param  QUERY_STRING       $query_string;
+      fastcgi_param  REQUEST_METHOD     $request_method;
+      fastcgi_param  CONTENT_TYPE       $content_type;
+      fastcgi_param  CONTENT_LENGTH     $content_length;
+      fastcgi_param  SCRIPT_NAME        $fastcgi_script_name;
+      fastcgi_param  REQUEST_URI        $request_uri;
+      fastcgi_param  DOCUMENT_URI       $document_uri;
+      fastcgi_param  DOCUMENT_ROOT      $document_root;
+      fastcgi_param  SERVER_PROTOCOL    $server_protocol;
+      fastcgi_param  REQUEST_SCHEME     $scheme;
+      fastcgi_param  HTTPS              $https if_not_empty;
+      fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;
+      fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;
+      fastcgi_param  REMOTE_ADDR        $remote_addr;
+      fastcgi_param  REMOTE_PORT        $remote_port;
+      fastcgi_param  SERVER_ADDR        $server_addr;
+      fastcgi_param  SERVER_PORT        $server_port;
+      fastcgi_param  SERVER_NAME        $server_name;
+      fastcgi_param  SCRIPT_FILENAME    $document_root$fastcgi_script_name;
+      fastcgi_param  PATH_INFO          $fastcgi_path_info;
+      fastcgi_param  PATH_TRANSLATED    $document_root$fastcgi_path_info;
+      fastcgi_param  HTTP_HOST          $http_host;
+      fastcgi_param  HTTP_USER_AGENT    $http_user_agent;
+      fastcgi_param  HTTP_REFERER       $http_referer;
+      fastcgi_param  HTTP_COOKIE        $http_cookie;
+      fastcgi_param  HTTP_ACCEPT        $http_accept;
+      fastcgi_param  HTTP_ACCEPT_LANGUAGE $http_accept_language;
+      fastcgi_param  HTTP_ACCEPT_ENCODING $http_accept_encoding;
+      fastcgi_param  HTTP_CONNECTION    $http_connection;
+      fastcgi_intercept_errors on;
+  tags: nginx_quic
+
+- name: Create logs directory
+  become: true
+  ansible.builtin.file:
+    path: "/var/log/nginx"
+    state: directory
+    mode: "0755"
+  tags: nginx_quic
+
+- name: Install systemd service file for nginx_quic
+  become: true
+  ansible.builtin.copy:
+    dest: /lib/systemd/system/nginx.service
+    content: |
+      [Unit]
+      Description=A high performance web server and a reverse proxy server
+      After=network.target
+
+      [Service]
+      Type=forking
+      PIDFile=/run/nginx.pid
+      ExecStartPre={{ nginx_quic_sbin_path }} -t -c {{ nginx_quic_config_path }}
+      ExecStart={{ nginx_quic_sbin_path }} -c {{ nginx_quic_config_path }}
+      ExecReload=/bin/kill -s HUP $MAINPID
+      ExecStop=/bin/kill -s QUIT $MAINPID
+      PrivateTmp=true
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: '0644'
+  notify:
+    - Restart Nginx
+  tags: nginx_quic
+
+- name: Reload systemd daemon
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: nginx_quic_systemd_enabled
+  tags: nginx_quic
+
+- name: Generate self-signed certificate using openssl command
+  become: true
+  ansible.builtin.command: >
+    openssl req -x509 -nodes -days 3650
+      -newkey rsa:2048
+      -keyout "{{ nginx_quic_ssl_key_path }}"
+      -out "{{ nginx_quic_ssl_cert_path }}"
+      -subj "/C={{ nginx_quic_ssl_subject.country_name | default('US') }}/ST={{ nginx_quic_ssl_subject.state_or_province_name | default('State') }}/L={{ nginx_quic_ssl_subject.locality_name | default('Town') }}/O={{ nginx_quic_ssl_subject.organization_name | default('Org') }}/OU={{ nginx_quic_ssl_subject.organizational_unit_name | default('IT') }}/CN={{ nginx_quic_ssl_subject.common_name | default(nginx_quic_server_name) }}"
+  args:
+    creates: "{{ nginx_quic_ssl_cert_path }}"
+  notify:
+    - Restart Nginx
+  when: nginx_quic_generate_self_signed
+  tags: nginx_quic
+
+- name: Deploy main Nginx configuration
+  become: true
+  ansible.builtin.template:
+    src: "{{ nginx_quic_config_template }}"
+    dest: "{{ nginx_quic_config_path }}"
+    mode: "0644"
+  when: nginx_quic_manage_config
+  notify:
+    - Restart Nginx
+  tags: nginx_quic

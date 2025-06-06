@@ -1,0 +1,30 @@
+{# wp-preload.php.j2 #}
+<?php
+/**
+ * Safe PHP OPCache preload for WordPress.
+ * Compiles standalone files only — no execution or includes.
+ */
+
+$root = '/mnt/wordpress';
+
+// Only preload files that can be compiled standalone
+$files = array_merge(
+    glob("$root/wp-includes/*.php"),
+    glob("$root/wp-content/plugins/*.php"),
+    glob("$root/*.php")
+);
+
+foreach ($files as $file) {
+    // Exclude wp-load, wp-config, wp-settings, pluggable, and admin
+    if (
+        strpos($file, 'wp-load.php') === false &&
+        strpos($file, 'wp-settings.php') === false &&
+        strpos($file, 'wp-config.php') === false &&
+        strpos($file, 'pluggable.php') === false &&
+        strpos($file, 'wp-admin') === false
+    ) {
+        @opcache_compile_file($file);
+    }
+}
+
+error_log("Pure preload: compile only, no execution.");

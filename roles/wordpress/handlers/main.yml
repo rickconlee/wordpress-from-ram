@@ -1,0 +1,25 @@
+- name: restart nginx
+  service:
+    name: nginx
+    state: restarted
+
+- name: restart php
+  service:
+    name: php8.2-fpm
+    state: restarted
+
+
+# roles/wordpress/handlers/main.yml
+
+- name: reload cpufreq
+  command: systemctl restart cpufrequtils
+
+- name: reload sysctl
+  command: sysctl --system
+
+- name: reload systemd
+  command: systemctl daemon-reexec
+
+- name: run cpu pinning
+  command: /usr/local/bin/wpx-cpu-pin.sh
+

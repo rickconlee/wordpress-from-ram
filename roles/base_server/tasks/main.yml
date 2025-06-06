@@ -1,0 +1,110 @@
+###################################################
+# Install all the packages needed for this instance
+###################################################
+
+- name: Install All Base Software Dependencies
+  apt:
+    name:
+      - build-essential
+      - gcc
+      - make
+      - libpcre3
+      - libpcre3-dev
+      - libbrotli-dev
+      - zlib1g-dev
+      - libssl-dev
+      - git
+      - ca-certificates
+      - php8.2-fpm
+      - php8.2-mysql
+      - php8.2-curl
+      - php8.2-gd
+      - php8.2-mbstring
+      - php8.2-xml
+      - php8.2-zip
+      - php8.2-soap
+      - php8.2-intl
+      - php8.2-bcmath
+      - php8.2-imagick
+      - php8.2-opcache
+      - mariadb-server
+      - mariadb-common
+      - rclone
+      - unzip
+      - curl
+      - python3-pymysql
+      - cpufrequtils
+      - numactl
+      - util-linux
+    update_cache: yes
+    state: present
+
+############################
+# RAMDisk Creation
+############################
+
+- name: Create Mount Path for Wordpress
+  file:
+    path: /mnt/wordpress
+    state: directory
+
+- name: Mount Wordpress RAM disk
+  mount:
+    path: /mnt/wordpress
+    src: tmpfs
+    fstype: tmpfs
+    opts: size=1024m
+    state: mounted
+
+- name: Ensure MariaDB RAM disk exists
+  file:
+    path: /mnt/mysql
+    state: directory
+    owner: mysql
+    group: mysql
+    mode: '0755'
+
+- name: Mount tmpfs for MariaDB
+  mount:
+    path: /mnt/mysql
+    src: tmpfs
+    fstype: tmpfs
+    opts: size=512m
+    state: mounted
+
+######################
+# Rclone Config
+######################
+
+- name: Ensure rclone root config directory
+  file:
+    path: /root/.config/rclone
+    state: directory
+    mode: '0700'
+
+# Uncomment if the cloud-init that provisioned the bate VM has a "debian" or "admin" user
+#- name: Ensure rclone debian config directory
+#  file:
+#    path: /home/debian/.config/rclone
+#    state: directory
+#    mode: '0700'
+
+- name: Upload rclone for root
+  copy:
+    src: rclone.conf
+    dest: /root/.config/rclone/rclone.conf
+    mode: '0600'
+
+#- name: Upload rclone for debian
+#  copy:
+#    src: rclone.conf
+#    dest: /home/debian/.config/rclone/rclone.conf
+#    mode: '0600'
+
+#- name: Set proper permissions on rclone for Debian user
+#  file:
+#    path: /home/debian/.config/rclone
+#    owner: debian
+#    group: debian
+#    mode: '0600'
+#    recurse: yes

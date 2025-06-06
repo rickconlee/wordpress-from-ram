@@ -1,0 +1,113 @@
+# Nginx HTTP/3 config — built for QUIC on {{ nginx_quic_server_name }}
+
+user  www-data;
+worker_processes  1;
+pcre_jit on;
+
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+
+    # Lua module search paths (plain Lua & C modules)
+    lua_package_path  "/usr/local/share/lua/5.1/?.lua;/usr/local/share/lua/5.1/?/init.lua;;";
+    lua_package_cpath "/usr/local/lib/lua/5.1/?.so;;";
+
+    # ← NEW: load resty.core once for the whole master
+    #lua_load_resty_core on;
+
+    log_format  main  '$remote_addr - $remote_user [$time_local] '
+                      '"$request" $status $body_bytes_sent '
+                      '"$http_referer" "$http_user_agent"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile        on;
+    tcp_nopush      on;
+    tcp_nodelay     on;
+    keepalive_timeout  65;
+    types_hash_max_size 2048;
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    # Brotli and Gzip compression
+    brotli              on;
+    brotli_comp_level   6;
+    brotli_types        text/plain text/css application/javascript application/json application/xml+rss image/svg+xml;
+
+    gzip                on;
+    gzip_vary           on;
+    gzip_comp_level     6;
+    gzip_min_length     1024;
+    gzip_proxied        any;
+    gzip_types          text/plain text/css application/javascript application/json application_xml+rss image/svg+xml;
+
+    server {
+        listen 80;
+        server_name {{ nginx_quic_server_name }};
+
+        location /.well-known/acme-challenge/ {
+            root {{ letsencrypt_webroot }};
+        }
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        listen 443 quic reuseport;
+        http2 on;
+        http3 on;
+        client_max_body_size 64M;
+
+        server_name {{ nginx_quic_server_name }};
+
+        ssl_certificate     {{ nginx_quic_ssl_cert_path }};
+        ssl_certificate_key {{ nginx_quic_ssl_key_path }};
+        ssl_protocols       TLSv1.3;
+
+        ssl_stapling on;
+        ssl_stapling_verify on;
+        resolver 1.1.1.1 1.0.0.1 valid=300s;
+        resolver_timeout 5s;
+
+        add_header Alt-Svc 'h3=":443"'; # Advertise HTTP/3 support
+        add_header QUIC-Status $http3;  # Optional debug header
+
+        root {{ wordpress_site_root }};
+        index index.php index.html index.htm;
+
+        location ~* \.(?:ico|css|js|gif|jpe?g|png|woff2?|ttf|svg|eot|otf|webp)$ {
+            try_files $uri =404;
+            expires 6M;
+            access_log off;
+            add_header Cache-Control "public, max-age=15778463, immutable";
+            add_header Vary Accept-Encoding;
+            etag on;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.php?$args;
+            #access_by_lua_file /etc/nginx/inline_assets.lua;
+            body_filter_by_lua_file /etc/nginx/inline_assets.lua;
+        }
+
+        location ~ \.php$ {
+            include        fastcgi_params;
+            fastcgi_pass   unix:/run/php/php8.2-fpm.sock;
+            fastcgi_index  index.php;
+            fastcgi_param  SCRIPT_FILENAME {{ wordpress_site_root }}$fastcgi_script_name;
+            fastcgi_param  PATH_INFO       $fastcgi_path_info;
+        }
+
+        location ~ /\.ht {
+            deny all;
+        }
+    }
+}

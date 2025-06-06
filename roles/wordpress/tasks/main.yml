@@ -1,0 +1,229 @@
+#############################
+# Copy Fresh Wordpress Source
+##############################
+
+- name: Download latest WordPress
+  become: true
+  ansible.builtin.get_url:
+    url: https://wordpress.org/latest.tar.gz
+    dest: /tmp/latest.tar.gz
+    mode: '0644'
+  tags: wordpress
+
+- name: Extract WordPress to temporary directory
+  become: true
+  ansible.builtin.unarchive:
+    src: /tmp/latest.tar.gz
+    dest: /tmp
+    remote_src: yes
+    creates: /tmp/wordpress/wordpress/index.php
+  tags: wordpress
+
+- name: Ensure /mnt/wordpress exists
+  become: true
+  ansible.builtin.file:
+    path: /mnt/wordpress
+    state: directory
+    mode: '0755'
+  tags: wordpress
+
+- name: Copy WordPress into /mnt/wordpress
+  become: true
+  ansible.builtin.copy:
+    src: /tmp/wordpress/
+    dest: /mnt/wordpress/
+    remote_src: yes
+  tags: wordpress
+
+# - name: Sync site files into RAM using rclone
+#   command: rclone sync slappress:slappress/siteroot-woo/ /mnt/wordpress/
+#   args:
+#     creates: /mnt/wordpress/index.php
+
+#- name: Render WordPress OPCache preload script from Jinja2
+#  become: true
+#  ansible.builtin.template:
+#    src: wp-preload.php.j2
+#    dest: /mnt/wordpress/wp-preload.php
+#    owner: www-data
+#    group: www-data
+#    mode: '0644'
+#  notify: restart php
+#  tags: wordpress
+
+- name: Configure PHP-FPM
+  template:
+    src: php-fpm.conf.j2
+    dest: /etc/php/8.2/fpm/pool.d/www.conf
+  notify: restart php
+  tags: wordpress
+
+- name: Ensure WordPress database exists
+  mysql_db:
+    name: wordpress
+    state: present
+    login_user: root
+    login_unix_socket: /run/mysqld/mysqld.sock
+  tags: wordpress
+
+#- name: Download DB dump from rclone
+#  command: >
+#    rclone copy slappress:slappress/database/woocommercedev.sql /tmp/
+#  args:
+#    creates: /tmp/woocommercedev.sql
+
+#- name: Import DB dump
+#  mysql_db:
+#    name: wordpress
+#    state: import
+#    target: /tmp/woocommercedev.sql
+#    login_user: root
+#    login_unix_socket: /run/mysqld/mysqld.sock
+
+- name: Ensure non-root WordPress DB user exists
+  mysql_user:
+    name: wp_user
+    password: secure_wp_password
+    priv: "wordpress.*:ALL"
+    host: "localhost"
+    state: present
+    login_user: root
+    login_unix_socket: /run/mysqld/mysqld.sock
+  tags: wordpress
+
+- name: Configure OPCache in php.ini
+  become: true
+  ansible.builtin.blockinfile:
+    path: /etc/php/8.2/fpm/php.ini
+    marker: "; {mark} ANSIBLE MANAGED OPCACHE BLOCK"
+    insertafter: EOF
+    block: |
+      opcache.enable=1
+      opcache.enable_cli=1
+      opcache.memory_consumption=512
+      opcache.interned_strings_buffer=16
+      opcache.max_accelerated_files=20000
+      opcache.validate_timestamps=0
+      opcache.revalidate_freq=0
+      opcache.jit=tracing
+      opcache.jit_buffer_size=64M
+      opcache.mmap_base=0x20000000
+      opcache.file_cache=/dev/shm/php8.2-fpm-opcache
+      opcache.huge_code_pages=1
+  notify: restart php
+  tags: php
+
+- name: Set PHP upload limits
+  lineinfile:
+    path: /etc/php/8.2/fpm/php.ini
+    regexp: "^{{ item.key }}\\s*="
+    line: "{{ item.key }} = {{ item.value }}"
+    create: yes
+  loop:
+    - { key: 'upload_max_filesize', value: '64M' }
+    - { key: 'post_max_size', value: '64M' }
+  notify: restart php
+
+- name: Ensure PHP memory limit is high enough for preload
+  lineinfile:
+    path: /etc/php/8.2/fpm/php.ini
+    regexp: '^memory_limit\s*='
+    line: 'memory_limit = 512M'
+    create: yes
+  notify: restart php
+  tags: php_memory_limit
+
+- name: Set proper permissions on /mnt/wordpress
+  file:
+    path: /mnt/wordpress
+    owner: www-data
+    group: www-data
+    mode: '0755'
+    recurse: yes
+
+- name: Set CPU governor to 'performance'
+  copy:
+    dest: /etc/default/cpufrequtils
+    content: |
+      GOVERNOR="performance"
+  notify: reload cpufreq
+
+- name: Persist CPU governor across reboots
+  systemd:
+    name: cpufrequtils
+    enabled: yes
+    state: started
+
+- name: Tune sysctl parameters for cache performance
+  copy:
+    dest: /etc/sysctl.d/99-wpx-performance.conf
+    content: |
+      vm.swappiness = 1
+      vm.dirty_ratio = 10
+      vm.dirty_background_ratio = 5
+      kernel.sched_migration_cost_ns = 5000000
+      kernel.sched_autogroup_enabled = 0
+      kernel.numa_balancing = 0
+      net.core.somaxconn = 4096
+      net.ipv4.tcp_tw_reuse = 1
+      net.ipv4.tcp_fin_timeout = 10
+  notify: reload sysctl
+
+- name: Disable Transparent Huge Pages (THP)
+  copy:
+    dest: /etc/systemd/system/disable-thp.service
+    content: |
+      [Unit]
+      Description=Disable Transparent Huge Pages (THP)
+      DefaultDependencies=no
+      After=sysinit.target local-fs.target
+
+      [Service]
+      Type=simple
+      ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd
+
+- name: Enable disable-thp service
+  systemd:
+    name: disable-thp
+    enabled: yes
+    state: started
+
+- name: Pin nginx and php-fpm to separate cores (2-core optimized)
+  copy:
+    dest: /usr/local/bin/wpx-cpu-pin.sh
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      NGINX_PID=$(pgrep -x nginx | head -n1)
+      PHPFPM_PID=$(pgrep -x php-fpm8.2 | head -n1)
+      if [ -n "$NGINX_PID" ]; then
+        taskset -cp 0 "$NGINX_PID"
+      fi
+      if [ -n "$PHPFPM_PID" ]; then
+        taskset -cp 1 "$PHPFPM_PID"
+      fi
+  notify: run cpu pinning
+
+
+- name: Start nginx, php-fpm, mariadb
+  systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - nginx
+    - php8.2-fpm
+    - mariadb
+
+- name: Reload systemd services and restart MariaDB and PHP
+  systemd:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: yes
+  loop:
+    - mariadb
+    - php8.2-fpm
